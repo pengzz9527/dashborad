@@ -1,338 +1,697 @@
-import base64
-import datetime as dt
-import hashlib
-import io
-import os
-from dataclasses import dataclass
-
-import duckdb
-import requests
+# app.py - 主应用程序文件
 import streamlit as st
-from PIL import Image
+import duckdb
+import pandas as pd
+import numpy as np
+import plotly.express as px
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
+from datetime import datetime, timedelta
 
+# 页面配置
+st.set_page_config(
+    page_title="工程机械高管驾驶舱",
+    page_icon="🏗️",
+    layout="wide",
+    initial_sidebar_state="collapsed"
+)
 
-APP_TITLE = "xAI 图片生成器"
-DEFAULT_MODEL = "grok-2-image"
-DEFAULT_XAI_BASE_URL = os.getenv("XAI_BASE_URL", "https://api.x.ai")  # 可选：区域 endpoint
-DB_PATH = os.getenv("DB_PATH", "data/app.duckdb")
-IMAGE_DIR = os.getenv("IMAGE_DIR", "generated_images")
-
-
-@dataclass
-class GenResult:
-    created_at: dt.datetime
-    prompt: str
-    revised_prompt: str | None
-    model: str
-    idx: int
-    image_bytes: bytes
-    image_mime: str
-    filename: str
-
-
-def init_storage():
-    os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
-    os.makedirs(IMAGE_DIR, exist_ok=True)
-
-    con = duckdb.connect(DB_PATH)
-    con.execute(
-        """
-        create table if not exists generations (
-            id varchar primary key,
-            created_at timestamp,
-            model varchar,
-            prompt varchar,
-            revised_prompt varchar,
-            n integer,
-            response_format varchar,
-            image_mime varchar,
-            image_filename varchar
-        )
-        """
-    )
-    con.close()
-
-
-def xai_images_generate(base_url: str, api_key: str, model: str, prompt: str, n: int = 1, response_format: str = "b64_json"):
-    base_url = base_url.strip().rstrip("/")
-    url = f"{base_url}/v1/images/generations"
-
-    headers = {
-        "Authorization": f"Bearer {api_key}",
-        "Content-Type": "application/json",
-        "Accept": "application/json",
+# 自定义CSS样式 - 深色科技风
+st.markdown("""
+<style>
+    header {visibility: hidden;}
+    .stApp {
+        background: linear-gradient(135deg, #0f172a 0%, #1e293b 100%);
+        color: #e2e8f0;
     }
-
-    body = {
-        "model": model,
-        "prompt": prompt,
-        "n": int(n),
-        "response_format": response_format,
+    
+    .main-title {
+        font-size: 2.5rem;
+        font-weight: 800;
+        background: linear-gradient(90deg, #60a5fa, #c084fc, #f472b6);
+        -webkit-background-clip: text;
+        -webkit-text-fill-color: transparent;
+        text-align: center;
+        margin-bottom: 0.5rem;
+        letter-spacing: 2px;
     }
+    
+    .sub-title {
+        text-align: center;
+        color: #94a3b8;
+        font-size: 1rem;
+        margin-bottom: 2rem;
+    }
+    
+    .kpi-card {
+        background: rgba(30, 41, 59, 0.7);
+        backdrop-filter: blur(10px);
+        border: 1px solid rgba(148, 163, 184, 0.1);
+        border-radius: 16px;
+        padding: 1.5rem;
+        box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
+        transition: all 0.3s ease;
+    }
+    
+    .kpi-card:hover {
+        transform: translateY(-5px);
+        box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.2);
+        border-color: rgba(96, 165, 250, 0.3);
+    }
+    
+    .kpi-value {
+        font-size: 2.2rem;
+        font-weight: 700;
+        margin: 0.5rem 0;
+    }
+    
+    .kpi-label {
+        color: #94a3b8;
+        font-size: 0.9rem;
+        text-transform: uppercase;
+        letter-spacing: 1px;
+    }
+    
+    .kpi-delta-positive {
+        color: #4ade80;
+        font-weight: 600;
+        font-size: 0.9rem;
+    }
+    
+    .kpi-delta-negative {
+        color: #f87171;
+        font-weight: 600;
+        font-size: 0.9rem;
+    }
+    
+    hr {
+        border: 0;
+        height: 1px;
+        background: linear-gradient(90deg, transparent, rgba(148, 163, 184, 0.3), transparent);
+        margin: 2rem 0;
+    }
+    
+    .status-dot {
+        height: 8px;
+        width: 8px;
+        border-radius: 50%;
+        display: inline-block;
+        margin-right: 8px;
+    }
+    
+    .status-good { background-color: #4ade80; box-shadow: 0 0 8px #4ade80; }
+    .status-warning { background-color: #fbbf24; box-shadow: 0 0 8px #fbbf24; }
+    .status-danger { background-color: #f87171; box-shadow: 0 0 8px #f87171; }
+</style>
+""", unsafe_allow_html=True)
 
-    # 不要打印 headers/body（避免 key 泄漏到日志）
-    r = requests.post(url, headers=headers, json=body, timeout=120)
-    r.raise_for_status()
-    return r.json()
+# 生成模拟数据
+def generate_data():
+    np.random.seed(42)
+    
+    dates = pd.date_range(start='2024-01-01', end='2024-12-31', freq='D')
+    months = pd.date_range(start='2024-01-01', end='2024-12-31', freq='M')
+    
+    # 财务数据
+    financial_daily = pd.DataFrame({
+        'date': dates,
+        'revenue': np.cumsum(np.random.normal(2.5, 0.8, len(dates))) + 50,
+        'profit': np.cumsum(np.random.normal(0.4, 0.2, len(dates))) + 8,
+        'cash_flow': np.cumsum(np.random.normal(0.3, 0.5, len(dates))) + 15,
+        'cost': np.cumsum(np.random.normal(2.1, 0.6, len(dates))) + 42
+    })
+    
+    # 月度运营数据
+    operations_monthly = pd.DataFrame({
+        'month': months,
+        'oee': np.random.uniform(0.75, 0.92, len(months)),
+        'equipment_utilization': np.random.uniform(0.68, 0.85, len(months)),
+        'on_time_delivery': np.random.uniform(0.88, 0.98, len(months)),
+        'production_volume': np.random.randint(450, 650, len(months)),
+        'defect_rate': np.random.uniform(0.01, 0.04, len(months)),
+        'safety_incidents': np.random.randint(0, 5, len(months))
+    })
+    
+    # 销售与订单数据
+    sales_data = pd.DataFrame({
+        'region': ['华北', '华东', '华南', '西南', '海外'] * 12,
+        'month': list(months) * 5,
+        'orders': np.random.randint(20, 80, 60),
+        'backlog_value': np.random.uniform(50, 200, 60),
+        'win_rate': np.random.uniform(0.25, 0.45, 60)
+    })
+    
+    # 设备类别数据
+    equipment_types = ['挖掘机', '起重机', '混凝土机械', '桩工机械', '路面机械']
+    equipment_data = pd.DataFrame({
+        'type': equipment_types,
+        'sales_volume': [450, 320, 280, 190, 150],
+        'revenue': [2.8, 3.2, 1.9, 1.4, 1.1],
+        'market_share': [0.28, 0.24, 0.18, 0.15, 0.15],
+        'growth_rate': [0.15, 0.08, 0.22, 0.12, 0.05]
+    })
+    
+    # 供应链数据
+    supply_data = pd.DataFrame({
+        'supplier': ['供应商A', '供应商B', '供应商C', '供应商D', '供应商E'],
+        'delivery_rate': [0.94, 0.89, 0.96, 0.91, 0.88],
+        'quality_score': [92, 88, 95, 90, 87],
+        'lead_time': [12, 15, 10, 14, 18],
+        'cost_variance': [-0.02, 0.03, -0.01, 0.02, 0.04]
+    })
+    
+    # 项目数据
+    projects = pd.DataFrame({
+        'project_name': ['雄安项目', '大湾区基建', '海外矿山', '高铁项目', '港口建设', '风电项目'],
+        'progress': [0.85, 0.62, 0.45, 0.78, 0.91, 0.33],
+        'budget_used': [0.82, 0.58, 0.48, 0.75, 0.88, 0.35],
+        'cpi': [1.05, 1.12, 0.98, 1.08, 1.15, 0.95],
+        'spi': [0.98, 0.89, 0.92, 1.02, 1.05, 0.88]
+    })
+    
+    return financial_daily, operations_monthly, sales_data, equipment_data, supply_data, projects
 
+# 初始化DuckDB
+@st.cache_resource
+def init_duckdb():
+    conn = duckdb.connect(':memory:')
+    
+    fin_daily, ops_monthly, sales, equip, supply, projects = generate_data()
+    
+    conn.execute("CREATE TABLE financial_daily AS SELECT * FROM fin_daily")
+    conn.execute("CREATE TABLE operations_monthly AS SELECT * FROM ops_monthly")
+    conn.execute("CREATE TABLE sales_data AS SELECT * FROM sales")
+    conn.execute("CREATE TABLE equipment_data AS SELECT * FROM equip")
+    conn.execute("CREATE TABLE supply_data AS SELECT * FROM supply")
+    conn.execute("CREATE TABLE projects AS SELECT * FROM projects")
+    
+    return conn, fin_daily, ops_monthly, sales, equip, supply, projects
 
-def decode_image_from_b64_json(b64_json: str) -> tuple[bytes, str]:
-    """Returns (bytes, mime). Supports raw base64 or data URL."""
-    if b64_json.startswith("data:"):
-        # data:image/png;base64,....
-        header, b64data = b64_json.split(",", 1)
-        mime = header.split(";")[0].replace("data:", "")
-        return base64.b64decode(b64data), mime
+# 加载数据
+conn, fin_daily, ops_monthly, sales, equip, supply, projects = init_duckdb()
 
-    # xAI 文档描述为 b64_json（通常是纯 base64），生成格式一般为 jpg
-    raw = base64.b64decode(b64_json)
-    return raw, "image/jpeg"
+# 页面标题
+st.markdown('<h1 class="main-title">🏗️ 工程机械行业高管驾驶舱</h1>', unsafe_allow_html=True)
+st.markdown('<p class="sub-title">Executive Dashboard | Construction Machinery Industry</p>', unsafe_allow_html=True)
 
+# 顶部筛选栏
+#col_filter1, col_filter2, col_filter3, col_filter4 = st.columns([2, 2, 2, 2])
+#with col_filter1:
+#    selected_year = st.selectbox("📅 年度", ["2024", "2023", "2022"], index=0)
+#with col_filter2:
+#    selected_region = st.selectbox("🌍 区域", ["全部", "华北", "华东", "华南", "西南", "海外"], index=0)
+#with col_filter3:
+#   selected_product = st.selectbox("🏭 产品类别", ["全部", "挖掘机", "起重机", "混凝土机械", "桩工机械", "路面机械"], index=0)
+#with col_filter4:
+ #   refresh = st.button("🔄 刷新数据", use_container_width=True)
 
-def safe_id(*parts: str) -> str:
-    h = hashlib.sha256()
-    for p in parts:
-        h.update(p.encode("utf-8"))
-        h.update(b"\x1f")
-    return h.hexdigest()[:24]
+st.markdown("<hr>", unsafe_allow_html=True)
+# 第一行：核心KPI指标
+st.markdown("### 📊 核心财务指标")
 
+# KPI数据（模拟实时）
+total_revenue = 128.5
+total_profit = 16.8
+cash_flow = 23.4
+profit_margin = 13.1
+order_backlog = 156.7
 
-def save_generation_to_duckdb(
-    created_at: dt.datetime,
-    model: str,
-    prompt: str,
-    revised_prompt: str | None,
-    n: int,
-    response_format: str,
-    image_mime: str,
-    image_filename: str,
-):
-    con = duckdb.connect(DB_PATH)
-    gid = safe_id(created_at.isoformat(), model, prompt, image_filename)
-    con.execute(
-        """
-        insert or replace into generations
-        (id, created_at, model, prompt, revised_prompt, n, response_format, image_mime, image_filename)
-        values (?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """,
-        [gid, created_at, model, prompt, revised_prompt, n, response_format, image_mime, image_filename],
+kpi_cols = st.columns(5)
+
+with kpi_cols[0]:
+    st.markdown(f"""
+    <div class="kpi-card">
+        <div class="kpi-label">💰 总营收</div>
+        <div class="kpi-value" style="color: #60a5fa;">{total_revenue:.1f}亿</div>
+        <div class="kpi-delta-positive">▲ 12.5% 同比</div>
+    </div>
+    """, unsafe_allow_html=True)
+
+with kpi_cols[1]:
+    st.markdown(f"""
+    <div class="kpi-card">
+        <div class="kpi-label">📈 净利润</div>
+        <div class="kpi-value" style="color: #4ade80;">{total_profit:.1f}亿</div>
+        <div class="kpi-delta-positive">▲ 8.3% 同比</div>
+    </div>
+    """, unsafe_allow_html=True)
+
+with kpi_cols[2]:
+    st.markdown(f"""
+    <div class="kpi-card">
+        <div class="kpi-label">💵 经营现金流</div>
+        <div class="kpi-value" style="color: #f472b6;">{cash_flow:.1f}亿</div>
+        <div class="kpi-delta-positive">▲ 15.2% 同比</div>
+    </div>
+    """, unsafe_allow_html=True)
+
+with kpi_cols[3]:
+    st.markdown(f"""
+    <div class="kpi-card">
+        <div class="kpi-label">📊 净利润率</div>
+        <div class="kpi-value" style="color: #c084fc;">{profit_margin:.1f}%</div>
+        <div class="kpi-delta-negative">▼ 0.5pp 同比</div>
+    </div>
+    """, unsafe_allow_html=True)
+
+with kpi_cols[4]:
+    st.markdown(f"""
+    <div class="kpi-card">
+        <div class="kpi-label">📋 在手订单</div>
+        <div class="kpi-value" style="color: #fbbf24;">{order_backlog:.1f}亿</div>
+        <div class="kpi-delta-positive">▲ 22.1% 同比</div>
+    </div>
+    """, unsafe_allow_html=True)
+
+st.markdown("<br>", unsafe_allow_html=True)
+# 第四行：产品分析、供应链与项目监控
+row4_col1, row4_col2, row4_col3 = st.columns([2, 2, 2])
+
+with row4_col1:
+    st.markdown("#### 🏗️ 产品类别营收分析")
+    
+    equip_data = conn.execute("SELECT * FROM equipment_data").fetchdf()
+    
+    fig_product = go.Figure()
+    
+    fig_product.add_trace(go.Bar(
+        x=equip_data['type'],
+        y=equip_data['revenue'],
+        name='营收(亿元)',
+        marker=dict(
+            color=['#60a5fa', '#c084fc', '#f472b6', '#4ade80', '#fbbf24'],
+            line=dict(color='rgba(255,255,255,0.1)', width=1)
+        ),
+        text=equip_data['revenue'],
+        textposition='outside',
+        textfont=dict(color='#e2e8f0')
+    ))
+    
+    fig_product.add_trace(go.Scatter(
+        x=equip_data['type'],
+        y=equip_data['growth_rate'] * 100,
+        name='增长率(%)',
+        mode='lines+markers',
+        line=dict(color='#fbbf24', width=3),
+        marker=dict(size=10, symbol='star', color='#fbbf24'),
+        yaxis='y2'
+    ))
+    
+    fig_product.update_layout(
+        plot_bgcolor='rgba(0,0,0,0)',
+        paper_bgcolor='rgba(0,0,0,0)',
+        font=dict(color='#e2e8f0'),
+        margin=dict(l=40, r=40, t=30, b=80),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+        xaxis=dict(tickangle=-30, showgrid=False),
+        yaxis=dict(title='营收(亿元)', showgrid=True, gridcolor='rgba(148, 163, 184, 0.1)'),
+        yaxis2=dict(title='增长率(%)', overlaying='y', side='right', showgrid=False),
+        height=350
     )
-    con.close()
+    
+    st.plotly_chart(fig_product, use_container_width=True)
 
+with row4_col2:
+    st.markdown("#### 📊 供应商绩效矩阵")
+    
+    supply_data = conn.execute("SELECT * FROM supply_data").fetchdf()
+    
+    fig_supply = go.Figure()
+    
+    fig_supply.add_trace(go.Scatter(
+        x=supply_data['delivery_rate'] * 100,
+        y=supply_data['quality_score'],
+        mode='markers+text',
+        text=supply_data['supplier'],
+        textposition="top center",
+        textfont=dict(size=10, color='#e2e8f0'),
+        marker=dict(
+            size=supply_data['lead_time'] * 2,
+            color=supply_data['cost_variance'],
+            colorscale=[[0, '#4ade80'], [0.5, '#fbbf24'], [1, '#f87171']],
+            showscale=True,
+            colorbar=dict(title="成本偏差", tickfont=dict(color='#e2e8f0')),
+            line=dict(color='rgba(255,255,255,0.5)', width=1)
+        ),
+        hovertemplate='%{text}<br>交付率: %{x:.1f}%<br>质量分: %{y}<br>提前期: %{marker.size:.0f}天<extra></extra>'
+    ))
+    
+    fig_supply.add_hline(y=90, line_dash="dash", line_color="rgba(148, 163, 184, 0.3)")
+    fig_supply.add_vline(x=92, line_dash="dash", line_color="rgba(148, 163, 184, 0.3)")
+    fig_supply.add_annotation(x=88, y=97, text="问题供应商", showarrow=False, font=dict(color='#f87171', size=12))
+    fig_supply.add_annotation(x=96, y=97, text="战略供应商", showarrow=False, font=dict(color='#4ade80', size=12))
+    
+    fig_supply.update_layout(
+        plot_bgcolor='rgba(0,0,0,0)',
+        paper_bgcolor='rgba(0,0,0,0)',
+        font=dict(color='#e2e8f0'),
+        margin=dict(l=40, r=40, t=30, b=40),
+        xaxis=dict(title='交付率(%)', range=[85, 100], showgrid=True, gridcolor='rgba(148, 163, 184, 0.1)'),
+        yaxis=dict(title='质量评分', range=[85, 100], showgrid=True, gridcolor='rgba(148, 163, 184, 0.1)'),
+        height=350
+    )
+    
+    st.plotly_chart(fig_supply, use_container_width=True)
 
-def list_history(limit: int = 50):
-    con = duckdb.connect(DB_PATH)
-    df = con.execute(
-        """
-        select created_at, model, prompt, revised_prompt, image_mime, image_filename
-        from generations
-        order by created_at desc
-        limit ?
-        """,
-        [int(limit)],
-    ).df()
-    con.close()
-    return df
-
-
-def load_image_bytes(filename: str) -> bytes | None:
-    path = os.path.join(IMAGE_DIR, filename)
-    if not os.path.exists(path):
-        return None
-    with open(path, "rb") as f:
-        return f.read()
-
-
-def main():
-    st.set_page_config(page_title=APP_TITLE, layout="wide")
-    init_storage()
-
-    st.title(APP_TITLE)
-    st.caption("Streamlit + DuckDB + xAI Images API（key 只在界面输入，不落盘）")
-
-    with st.sidebar:
-        st.header("配置")
-
-        # key 只存 session_state
-        api_key = st.text_input(
-            "xAI API Key",
-            type="password",
-            value=st.session_state.get("xai_api_key", ""),
-            help="仅保存在当前浏览器会话内（session_state），不会写入数据库/文件。",
+with row4_col3:
+    st.markdown("#### 🎯 重大项目健康度")
+    
+    projects_data = conn.execute("SELECT * FROM projects").fetchdf()
+    
+    fig_projects = make_subplots(
+        rows=2, cols=3,
+        specs=[[{'type': 'indicator'}, {'type': 'indicator'}, {'type': 'indicator'}],
+               [{'type': 'indicator'}, {'type': 'indicator'}, {'type': 'indicator'}]],
+        vertical_spacing=0.3,
+        horizontal_spacing=0.1
+    )
+    
+    colors = ['#4ade80', '#60a5fa', '#fbbf24', '#c084fc', '#f472b6', '#94a3b8']
+    
+    for idx, row in projects_data.iterrows():
+        row_idx = idx // 3 + 1
+        col_idx = idx % 3 + 1
+        
+        health_score = (row['cpi'] * 0.5 + row['spi'] * 0.5) * 100
+        
+        fig_projects.add_trace(
+            go.Indicator(
+                mode="gauge+number",
+                value=health_score,
+                title={'text': row['project_name'], 'font': {'size': 12, 'color': '#e2e8f0'}},
+                number={'font': {'size': 16, 'color': '#e2e8f0'}},
+                gauge={
+                    'axis': {'range': [80, 120], 'tickwidth': 1},
+                    'bar': {'color': colors[idx % len(colors)]},
+                    'bgcolor': 'rgba(30, 41, 59, 0.5)',
+                    'borderwidth': 0,
+                    'threshold': {
+                        'line': {'color': "white", 'width': 2},
+                        'thickness': 0.75,
+                        'value': 100
+                    }
+                }
+            ),
+            row=row_idx, col=col_idx
         )
-        st.session_state["xai_api_key"] = api_key
+    
+    fig_projects.update_layout(
+        paper_bgcolor='rgba(0,0,0,0)',
+        font=dict(color='#e2e8f0'),
+        margin=dict(l=20, r=20, t=30, b=20),
+        height=350
+    )
+    
+    st.plotly_chart(fig_projects, use_container_width=True)
 
-        base_url = st.text_input(
-            "API Base URL（可选）",
-            value=st.session_state.get("xai_base_url", DEFAULT_XAI_BASE_URL),
-            help="默认 https://api.x.ai；如需区域 endpoint，可改成 https://us-east-1.api.x.ai 之类。",
-        )
-        st.session_state["xai_base_url"] = base_url
-
-        model = st.text_input("模型", value=st.session_state.get("xai_model", DEFAULT_MODEL))
-        st.session_state["xai_model"] = model
-
-        n = st.slider("一次生成张数 n", min_value=1, max_value=10, value=int(st.session_state.get("xai_n", 1)))
-        st.session_state["xai_n"] = n
-
-        response_format = st.selectbox(
-            "返回格式",
-            options=["b64_json", "url"],
-            index=0,
-            help="为便于在 Streamlit 里展示与下载，推荐 b64_json。url 会给托管链接。",
-        )
-
-        history_limit = st.slider("历史记录展示条数", min_value=10, max_value=200, value=50, step=10)
-
-    col_left, col_right = st.columns([1.2, 1])
-
-    with col_left:
-        st.subheader("生成")
-        prompt = st.text_area(
-            "提示词（Prompt）",
-            height=140,
-            placeholder="例如：一只戴墨镜的柴犬，赛博朋克风格，夜晚霓虹灯街道，电影级光影",
-        )
-
-        gen_btn = st.button("生成图片", type="primary", use_container_width=True)
-
-        if gen_btn:
-            if not api_key:
-                st.error("请先在侧边栏输入 xAI API Key")
-                st.stop()
-            if not prompt.strip():
-                st.error("请先输入提示词")
-                st.stop()
-
-            with st.spinner("生成中…"):
-                created_at = dt.datetime.now(dt.timezone.utc).astimezone()
-                try:
-                    resp = xai_images_generate(
-                        base_url=base_url,
-                        api_key=api_key,
-                        model=model.strip(),
-                        prompt=prompt.strip(),
-                        n=n,
-                        response_format=response_format,
-                    )
-                except requests.HTTPError as e:
-                    # 输出简化错误，避免把敏感信息暴露
-                    st.error(f"请求失败：{e.response.status_code} {e.response.text[:400]}")
-                    st.stop()
-                except Exception as e:
-                    st.error(f"请求失败：{e}")
-                    st.stop()
-
-                data = resp.get("data", [])
-                if not data:
-                    st.warning("接口没有返回图片数据")
-                    st.json(resp)
-                    st.stop()
-
-                st.success(f"生成完成：{len(data)} 张")
-
-                results: list[GenResult] = []
-                for i, item in enumerate(data, start=1):
-                    revised_prompt = item.get("revised_prompt")
-
-                    if response_format == "url":
-                        url = item.get("url")
-                        if not url:
-                            continue
-                        # 对 url 模式：下载回来以便展示/下载
-                        img_r = requests.get(url, timeout=120)
-                        img_r.raise_for_status()
-                        img_bytes = img_r.content
-                        mime = img_r.headers.get("content-type", "image/jpeg")
-                    else:
-                        b64_json = item.get("b64_json")
-                        if not b64_json:
-                            continue
-                        img_bytes, mime = decode_image_from_b64_json(b64_json)
-
-                    ext = "jpg"
-                    if "png" in mime:
-                        ext = "png"
-                    elif "webp" in mime:
-                        ext = "webp"
-
-                    filename = f"{created_at.strftime('%Y%m%d_%H%M%S')}_{safe_id(prompt, str(i))}.{ext}"
-                    out_path = os.path.join(IMAGE_DIR, filename)
-                    with open(out_path, "wb") as f:
-                        f.write(img_bytes)
-
-                    save_generation_to_duckdb(
-                        created_at=created_at,
-                        model=model.strip(),
-                        prompt=prompt.strip(),
-                        revised_prompt=revised_prompt,
-                        n=n,
-                        response_format=response_format,
-                        image_mime=mime,
-                        image_filename=filename,
-                    )
-
-                    results.append(
-                        GenResult(
-                            created_at=created_at,
-                            prompt=prompt.strip(),
-                            revised_prompt=revised_prompt,
-                            model=model.strip(),
-                            idx=i,
-                            image_bytes=img_bytes,
-                            image_mime=mime,
-                            filename=filename,
-                        )
-                    )
-
-                st.session_state["last_results"] = results
-
-        # 展示最近一次结果
-        last_results: list[GenResult] = st.session_state.get("last_results", [])
-        if last_results:
-            st.divider()
-            st.subheader("最近一次生成")
-
-            grid_cols = st.columns(min(3, len(last_results)))
-            for j, res in enumerate(last_results):
-                with grid_cols[j % len(grid_cols)]:
-                    try:
-                        img = Image.open(io.BytesIO(res.image_bytes))
-                        st.image(img, caption=res.filename, use_container_width=True)
-                    except Exception:
-                        st.image(res.image_bytes, caption=res.filename, use_container_width=True)
-
-                    st.download_button(
-                        label="下载图片",
-                        data=res.image_bytes,
-                        file_name=res.filename,
-                        mime=res.image_mime,
-                        use_container_width=True,
-                    )
-
-            with st.expander("查看 revised_prompt（如果有）"):
-                for res in last_results:
-                    if res.revised_prompt:
-                        st.markdown(f"**{res.filename}**")
-                        st.write(res.revised_prompt)
-
-    with col_right:
-        st.subheader("历史记录")
-        df = list_history(limit=history_limit)
-        st.dataframe(df, use_container_width=True, hide_index=True)
-
-        st.download_button(
-            "导出历史 CSV",
-            data=df.to_csv(index=False).encode("utf-8"),
-            file_name="generations_history.csv",
-            mime="text/csv",
-            use_container_width=True,
-        )
-
-        st.caption(
-            "提示：如果在 Streamlit Cloud 上部署，服务端存储可能会在重启后丢失；但图片下载到你本地不会受影响。"
-        )
+st.markdown("<br>", unsafe_allow_html=True)
 
 
-if __name__ == "__main__":
-    main()
+# 第二行：图表区域
+row2_col1, row2_col2 = st.columns([3, 2])
+
+with row2_col1:
+    st.markdown("#### 📈 营收与利润趋势")
+    
+    monthly_data = conn.execute("""
+        SELECT 
+            DATE_TRUNC('month', date) as month,
+            MAX(revenue) - MIN(revenue) as monthly_revenue,
+            MAX(profit) - MIN(profit) as monthly_profit
+        FROM financial_daily
+        GROUP BY DATE_TRUNC('month', date)
+        ORDER BY month
+    """).fetchdf()
+    
+    fig_trend = make_subplots(specs=[[{"secondary_y": True}]])
+    
+    fig_trend.add_trace(
+        go.Scatter(
+            x=monthly_data['month'], 
+            y=monthly_data['monthly_revenue'],
+            name="月度营收",
+            fill='tozeroy',
+            fillcolor='rgba(96, 165, 250, 0.2)',
+            line=dict(color='#60a5fa', width=3),
+            mode='lines+markers'
+        ),
+        secondary_y=False
+    )
+    
+    fig_trend.add_trace(
+        go.Scatter(
+            x=monthly_data['month'], 
+            y=monthly_data['monthly_profit'],
+            name="月度利润",
+            line=dict(color='#4ade80', width=3, dash='dot'),
+            mode='lines+markers',
+            marker=dict(size=8, symbol='diamond')
+        ),
+        secondary_y=True
+    )
+    
+    fig_trend.update_layout(
+        plot_bgcolor='rgba(0,0,0,0)',
+        paper_bgcolor='rgba(0,0,0,0)',
+        font=dict(color='#e2e8f0'),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+        margin=dict(l=40, r=40, t=40, b=40),
+        hovermode='x unified'
+    )
+    
+    fig_trend.update_xaxes(showgrid=True, gridwidth=1, gridcolor='rgba(148, 163, 184, 0.1)')
+    fig_trend.update_yaxes(showgrid=True, gridwidth=1, gridcolor='rgba(148, 163, 184, 0.1)', secondary_y=False)
+    fig_trend.update_yaxes(showgrid=False, secondary_y=True)
+    
+    st.plotly_chart(fig_trend, use_container_width=True)
+
+with row2_col2:
+    st.markdown("#### 🗺️ 区域销售分布")
+    
+    region_data = conn.execute("""
+        SELECT 
+            region,
+            SUM(orders) as total_orders,
+            SUM(backlog_value) as total_backlog
+        FROM sales_data
+        GROUP BY region
+    """).fetchdf()
+    
+    fig_region = go.Figure(data=[go.Pie(
+        labels=region_data['region'],
+        values=region_data['total_orders'],
+        hole=0.6,
+        marker=dict(
+            colors=['#60a5fa', '#c084fc', '#f472b6', '#4ade80', '#fbbf24'],
+            line=dict(color='rgba(30, 41, 59, 0.8)', width=2)
+        ),
+        textinfo='label+percent',
+        textfont=dict(size=12, color='#e2e8f0'),
+        hovertemplate='%{label}<br>订单量: %{value}<br>占比: %{percent}<extra></extra>'
+    )])
+    
+    fig_region.update_layout(
+        showlegend=False,
+        plot_bgcolor='rgba(0,0,0,0)',
+        paper_bgcolor='rgba(0,0,0,0)',
+        font=dict(color='#e2e8f0'),
+        margin=dict(l=20, r=20, t=30, b=20),
+        annotations=[dict(text='总订单<br>分布', x=0.5, y=0.5, font_size=16, showarrow=False, font_color='#94a3b8')]
+    )
+    
+    st.plotly_chart(fig_region, use_container_width=True)
+
+st.markdown("<br>", unsafe_allow_html=True)
+
+# 第三行：运营效率指标
+st.markdown("### ⚙️ 运营效率监控")
+
+row3_col1, row3_col2, row3_col3 = st.columns([1, 1, 1])
+
+with row3_col1:
+    st.markdown("#### 🏭 设备综合效率 (OEE)")
+    
+    oee_data = conn.execute("SELECT month, oee FROM operations_monthly ORDER BY month").fetchdf()
+    
+    fig_oee = go.Figure()
+    fig_oee.add_trace(go.Bar(
+        x=oee_data['month'],
+        y=oee_data['oee'] * 100,
+        marker=dict(
+            color=oee_data['oee'],
+            colorscale=[[0, '#f87171'], [0.5, '#fbbf24'], [1, '#4ade80']],
+            showscale=False,
+            line=dict(color='rgba(255,255,255,0.1)', width=1)
+        ),
+        text=[f"{v:.1f}%" for v in oee_data['oee'] * 100],
+        textposition='outside',
+        textfont=dict(color='#e2e8f0', size=10)
+    ))
+    
+    fig_oee.add_hline(y=85, line_dash="dash", line_color="#4ade80", annotation_text="目标线 85%")
+    
+    fig_oee.update_layout(
+        plot_bgcolor='rgba(0,0,0,0)',
+        paper_bgcolor='rgba(0,0,0,0)',
+        font=dict(color='#e2e8f0'),
+        margin=dict(l=40, r=20, t=30, b=40),
+        xaxis=dict(showgrid=False),
+        yaxis=dict(showgrid=True, gridcolor='rgba(148, 163, 184, 0.1)', range=[60, 100]),
+        height=300
+    )
+    
+    st.plotly_chart(fig_oee, use_container_width=True)
+
+with row3_col2:
+    st.markdown("#### 📦 准时交付率")
+    
+    delivery_data = conn.execute("SELECT month, on_time_delivery FROM operations_monthly ORDER BY month").fetchdf()
+    
+    fig_delivery = go.Figure()
+    fig_delivery.add_trace(go.Scatter(
+        x=delivery_data['month'],
+        y=delivery_data['on_time_delivery'] * 100,
+        fill='tozeroy',
+        fillcolor='rgba(192, 132, 252, 0.2)',
+        line=dict(color='#c084fc', width=3),
+        mode='lines+markers',
+        marker=dict(size=8, color='#c084fc'),
+        name='交付率'
+    ))
+    
+    fig_delivery.add_hline(y=95, line_dash="dash", line_color="#4ade80")
+    
+    fig_delivery.update_layout(
+        plot_bgcolor='rgba(0,0,0,0)',
+        paper_bgcolor='rgba(0,0,0,0)',
+        font=dict(color='#e2e8f0'),
+        margin=dict(l=40, r=20, t=30, b=40),
+        showlegend=False,
+        xaxis=dict(showgrid=False),
+        yaxis=dict(showgrid=True, gridcolor='rgba(148, 163, 184, 0.1)', range=[85, 100]),
+        height=300
+    )
+    
+    st.plotly_chart(fig_delivery, use_container_width=True)
+
+with row3_col3:
+    st.markdown("#### 🔧 设备利用率")
+    
+    util_data = conn.execute("SELECT month, equipment_utilization FROM operations_monthly ORDER BY month").fetchdf()
+    
+    fig_util = go.Figure()
+    fig_util.add_trace(go.Scatter(
+        x=util_data['month'],
+        y=util_data['equipment_utilization'] * 100,
+        mode='lines+markers',
+        line=dict(color='#f472b6', width=3),
+        marker=dict(size=8, color='#f472b6', symbol='circle'),
+        fill='tonexty',
+        fillcolor='rgba(244, 114, 182, 0.1)'
+    ))
+    
+    fig_util.add_trace(go.Scatter(
+        x=util_data['month'],
+        y=[60]*len(util_data),
+        mode='lines',
+        line=dict(width=0),
+        showlegend=False,
+        hoverinfo='skip'
+    ))
+    
+    fig_util.update_layout(
+        plot_bgcolor='rgba(0,0,0,0)',
+        paper_bgcolor='rgba(0,0,0,0)',
+        font=dict(color='#e2e8f0'),
+        margin=dict(l=40, r=20, t=30, b=40),
+        showlegend=False,
+        xaxis=dict(showgrid=False),
+        yaxis=dict(showgrid=True, gridcolor='rgba(148, 163, 184, 0.1)', range=[60, 90]),
+        height=300
+    )
+    
+    st.plotly_chart(fig_util, use_container_width=True)
+
+st.markdown("<br>", unsafe_allow_html=True)
+
+
+
+# 第五行：详细数据表格与预警信息
+st.markdown("### 📋 详细数据监控")
+
+row5_col1, row5_col2 = st.columns([2, 1])
+
+with row5_col1:
+    st.markdown("#### 📈 月度运营数据明细")
+    
+    detail_data = conn.execute("""
+        SELECT 
+            month as 月份,
+            ROUND(oee * 100, 2) as OEE百分比,
+            ROUND(equipment_utilization * 100, 2) as 设备利用率,
+            ROUND(on_time_delivery * 100, 2) as 准时交付率,
+            production_volume as 产量台数,
+            ROUND(defect_rate * 100, 2) as 缺陷率,
+            safety_incidents as 安全事故
+        FROM operations_monthly
+        ORDER BY month DESC
+    """).fetchdf()
+    
+    st.dataframe(
+        detail_data,
+        use_container_width=True,
+        height=300,
+        column_config={
+            "OEE百分比": st.column_config.ProgressColumn("OEE", min_value=0, max_value=100, format="%.1f%%"),
+            "设备利用率": st.column_config.ProgressColumn("设备利用率", min_value=0, max_value=100, format="%.1f%%"),
+            "准时交付率": st.column_config.ProgressColumn("交付率", min_value=0, max_value=100, format="%.1f%%"),
+            "缺陷率": st.column_config.NumberColumn("缺陷率", format="%.2f%%")
+        }
+    )
+
+with row5_col2:
+    st.markdown("#### ⚠️ 关键预警")
+    
+    alerts = [
+        {"level": "danger", "msg": "西南区交付率低于90%", "time": "2小时前"},
+        {"level": "warning", "msg": "供应商C交付延迟3天", "time": "4小时前"},
+        {"level": "warning", "msg": "风电项目SPI低于0.9", "time": "6小时前"},
+        {"level": "good", "msg": "本月OEE创历史新高达91%", "time": "1天前"},
+        {"level": "good", "msg": "海外订单增长35%", "time": "1天前"}
+    ]
+    
+    for alert in alerts:
+        dot_class = f"status-{alert['level']}"
+        color = '#f87171' if alert['level'] == 'danger' else '#fbbf24' if alert['level'] == 'warning' else '#4ade80'
+        
+        st.markdown(f"""
+        <div style="
+            background: rgba(30, 41, 59, 0.5);
+            border-left: 4px solid {color};
+            padding: 12px;
+            margin-bottom: 8px;
+            border-radius: 0 8px 8px 0;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        ">
+            <div>
+                <span class="status-dot {dot_class}"></span>
+                <span style="color: #e2e8f0; font-size: 0.9rem;">{alert['msg']}</span>
+            </div>
+            <span style="color: #64748b; font-size: 0.75rem;">{alert['time']}</span>
+        </div>
+        """, unsafe_allow_html=True)
+
+# 底部页脚
+st.markdown("<hr>", unsafe_allow_html=True)
+st.markdown("""
+<div style="text-align: center; color: #64748b; font-size: 0.8rem; padding: 1rem;">
+    <p>© 2026 工程机械智能管理平台 | 数据更新时间: 2025-01-09 23:59:59 | 系统版本 v2.1.0</p>
+    <p style="margin-top: 0.5rem;">
+        <span style="margin: 0 10px;">🟢 系统运行正常</span>
+        <span style="margin: 0 10px;">📊 数据延迟 < 5分钟</span>
+        <span style="margin: 0 10px;">🔒 安全连接</span>
+    </p>
+</div>
+""", unsafe_allow_html=True)
