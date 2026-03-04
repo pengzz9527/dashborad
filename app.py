@@ -20,6 +20,28 @@ st.set_page_config(
 st.markdown("""
 <style>
     header {visibility: hidden;}
+    /* 页面顶部整体上移 */
+    .block-container {
+        padding-top: 0.5rem !important;
+    }
+    
+    /* 标题间距压缩 */
+    h1 {
+        margin-top: 0rem !important;
+        margin-bottom: 0.2rem !important;
+    }
+    
+    /* 副标题压缩 */
+    h3 {
+        margin-top: 0rem !important;
+        margin-bottom: 0.5rem !important;
+    }
+    
+    /* 分割线压缩 */
+    hr {
+        margin: 0.3rem 0rem !important;
+    }
+
     .stApp {
         background: linear-gradient(135deg, #0f172a 0%, #1e293b 100%);
         color: #e2e8f0;
